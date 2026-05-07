@@ -1,0 +1,295 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Party Social</title>
+
+  <style>
+    body {
+      font-family: sans-serif;
+      max-width: 700px;
+      margin: 40px auto;
+    }
+
+    input, button {
+      padding: 8px;
+      margin: 4px;
+    }
+
+    .box {
+      border: 1px solid #ddd;
+      padding: 10px;
+      margin: 10px 0;
+    }
+
+    .muted {
+      color: #666;
+      font-size: 12px;
+    }
+
+    #game, #join {
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+
+<h2>Party Social</h2>
+
+<div id="start">
+  <div class="box" id="signin">
+    <h2>Sign In</h2>
+  <button onclick="createKey()">Guest</button>
+    <button onclick="nip7()">NIP-7</button>
+  <div id="pubkey" class="muted"></div>
+</div>
+
+<div class="box" id="join">
+  <h2>Game</h2>
+  <button onclick="createGameId()">Create Game</button> or
+  <input id="gameId" value="party_social_" placeholder="game id" />
+  <button onclick="joinGame()">Join Game</button>
+</div>
+</div>
+
+<div id="game">
+  <div class="box">
+  <h3>Prompt</h3>
+
+  <input
+    id="prompt"
+    placeholder="I can't believe they put ___ in the dive tank"
+  />
+
+  <button onclick="sendPrompt()">Send Prompt</button>
+</div>
+
+<div class="box">
+  <h3 id="promptdisplay">Answer</h3>
+
+  <input
+    id="answer"
+    placeholder="your answer"
+  />
+
+  <button onclick="sendAnswer()">Submit Answer</button>
+</div>
+
+<details id="feed">
+  <summary>History</summary>
+</details>
+</div>
+
+<script type="module">
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+  SimplePool
+} from "https://esm.sh/nostr-tools@2.7.0";
+
+const relays = [
+  "wss://relay.damus.io",
+  "wss://nos.lol",
+  "wss://relay.primal.net"
+];
+
+const pool = new SimplePool();
+
+const feed = document.getElementById("feed");
+
+let signer = null;
+let pk = null;
+let gameId = null;
+
+const seen = new Set();
+
+window.createKey = () => {
+  const sk = generateSecretKey();
+
+  pk = getPublicKey(sk);
+
+  signer = {
+    async sign(event) {
+      return finalizeEvent(event, sk);
+    }
+  };
+
+  document.getElementById("pubkey").innerText =
+    "pubkey: " + pk;
+
+  setSignInOrGame("join");
+};
+
+window.nip7 = async () => {
+  if (!window.nostr) {
+    alert("Please install or unlock a Nostr extension.");
+    return;
+  }
+
+  try {
+    pk = await window.nostr.getPublicKey();
+
+    signer = {
+      async sign(event) {
+        return await window.nostr.signEvent(event);
+      }
+    };
+
+    document.getElementById("pubkey").innerText =
+      `pubkey: ${pk}`;
+
+    setSignInOrGame("join");
+
+  } catch (e) {
+    console.error(e);
+  }
+};
+
+const setView = to => {
+  document.getElementById("start").style.display = to === "start" ? "block" : "none";
+  document.getElementById("game").style.display = to === "game" ? "block" : "none";
+};
+
+const setSignInOrGame = to => {
+ document.getElementById("signin").style.display = to === "signin" ? "block" : "none";
+ document.getElementById("join").style.display = to === "join" ? "block" : "none";
+};
+
+
+
+window.createGameId = () => {
+  const newGameId = "party_social_" + Math.random().toString(16).slice(2, 8);
+  document.getElementById("gameId").value = newGameId;
+
+  window.joinGame();
+};
+
+window.joinGame = () => {
+  gameId = document.getElementById("gameId").value;
+
+  pool.subscribeMany(
+    relays,
+    [
+      {
+        kinds: [21001, 21002],
+        "#g": [gameId]
+      }
+    ],
+    {
+      onevent(event) {
+        if (seen.has(event.id)) return;
+        seen.add(event.id);
+
+        renderEvent(event);
+      }
+    }
+  );
+
+      setView("game");
+};
+
+window.sendPrompt = async () => {
+  if (!signer) {
+    alert("generate key first");
+    return;
+  }
+
+  const prompt = document.getElementById("prompt").value;
+
+const unsignedEvent = {
+  kind: 21001,
+  created_at: Math.floor(Date.now() / 1000),
+  tags: [
+    ["g", gameId]
+  ],
+  content: JSON.stringify({
+    prompt
+  }),
+  pubkey: pk
+};
+
+const signedEvent = await signer.sign(unsignedEvent);
+
+console.log(signedEvent);
+
+pool.publish(relays, signedEvent);
+};
+
+window.sendAnswer = async () => {
+  if (!signer) {
+    alert("generate key first");
+    return;
+  }
+
+  const answer = document.getElementById("answer").value;
+
+  const unsignedEvent = {
+  kind: 21002,
+  created_at: Math.floor(Date.now() / 1000),
+  tags: [
+    ["g", gameId]
+  ],
+  content: JSON.stringify({
+    answer
+  }),
+  pubkey: pk
+};
+
+const signedEvent = await signer.sign(unsignedEvent);
+
+  pool.publish(relays, signedEvent);
+};
+
+function renderEvent(event) {
+  const div = document.createElement("div");
+
+  div.className = "box";
+
+  let parsed;
+
+  try {
+    parsed = JSON.parse(event.content);
+  } catch {
+    parsed = { raw: event.content };
+  }
+
+  if (event.kind === 21001) {
+    document.getElementById("promptdisplay").innerText =
+      "Prompt: " + parsed.prompt;
+  }
+
+  const label =
+    event.kind === 21001
+      ? "📝 Prompt"
+      : "💬 Answer";
+
+  div.innerHTML = `
+    <div><b>${label}</b></div>
+
+    <pre>${escapeHtml(
+      JSON.stringify(parsed, null, 2)
+    )}</pre>
+
+    <div class="muted">
+      ${event.pubkey.slice(0, 12)}...
+    </div>
+  `;
+
+  feed.prepend(div);
+}
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, m => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;"
+  }[m]));
+}
+</script>
+
+</body>
+</html>
