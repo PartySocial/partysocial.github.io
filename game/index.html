@@ -1,0 +1,1034 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Party Social</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Party Social is a collection of interactive games built on Nostr. Create and share your own game packs, or play with friends!" />
+  <link rel="stylesheet" href="./style.css" />
+
+</head>
+
+<body>
+
+<h2>Party Social</h2>
+<div id="packorgame" style="text-align: center;display: none;">
+<button onclick="setPackCreateOrGame('game')">Play Game</button>
+<button id="createb" onclick="setPackCreateOrGame('createpack')">Create Pack</button>
+<button id="editb" onclick="setPackCreateOrGame('editpack')">Edit Pack</button>
+<button onclick="setPackCreateOrGame('browsepacks')">Browse Packs</button>
+</div>
+
+<div id="start" class="centered">
+  <div class="box centered" id="signin">
+    <h2>Sign In</h2>
+  <button onclick="createKey()">Guest</button>
+    <button onclick="nip7()">NIP-7</button>
+  <div id="pubkey" class="muted"></div>
+</div>
+
+<div class="box" id="join">
+  <h2>Game</h2>
+  <button onclick="createGameId()">Create Game</button> or
+  <input id="gameId" placeholder="party_social_" />
+  <button onclick="joinGame()">Join Game</button>
+</div>
+</div>
+
+  <div class="centered" id="createpack" style="display: none;">
+  <h2>Create Pack</h2>
+
+  <input id="packName" placeholder="pack name" />
+  <input id="packDescription" placeholder="description" />
+<br>
+  <button onclick="createPack()">
+    Create Pack
+  </button>
+</div>
+
+<div class="centered" id="editpack" style="display: none;">
+  <h2>Edit Pack</h2>
+
+  <button onclick="loadPacks()">
+    Load Packs
+  </button>
+
+  <select id="promptPackSelect"></select>
+
+  <input id="packPrompt" placeholder="prompt text" />
+
+  <button onclick="createPackPrompt()">
+    Add Prompt
+  </button>
+</div>
+
+<div class="centered" id="browsepacks" style="display: none;text-align: center;">
+  <h2>Browse Packs</h2>
+
+  <button onclick="loadPacks()">
+    Load Packs
+  </button>
+
+  <input id="packSearch" placeholder="search packs..." oninput="filterPacks()" style="width: 20%;" />
+
+  <div id="packs"></div>
+</div>
+
+<div id="game">
+
+  <div id="hostBar" style="display:none;" class="box">
+    <span id="packsel">Pack: <select id="selectedPack" style="width: 20%;"></select></span>
+    <button id="nextPromptBtn" onclick="startRound()" style="display:none;">▶ Start Round</button>
+    <button id="endAnsweringBtn" onclick="endAnswering()" style="display:none;">⏹ End Answering</button>
+    <button id="endVotingBtn" onclick="endVoting()" style="display:none;">🏆 Show Results</button>
+    <button id="nextRoundBtn" onclick="startRound()" style="display:none;">⏭ Next Round</button>
+  </div>
+
+  <div id="phase-waiting" class="box centered" style="text-align:center; display:none;">
+    <p>⏳ Waiting for the host to start a round…</p>
+    <p onclick="window.navigator.clipboard.writeText(gameId.value); alert('Copied!')" id="gameIdDisplay">game id</p>
+    <p class="muted">Click the game id to copy and share with friends!</p>
+  </div>
+
+  <div id="phase-answering" class="box centered" style="display:none;">
+    <h3 id="promptdisplay">—</h3>
+    <div id="answerArea">
+      <input id="answer" placeholder="your answer" />
+      <button onclick="sendAnswer()">Submit Answer</button>
+    </div>
+    <p id="answerSubmitted" style="display:none; color:#666;">✅ Answer submitted! Click "End Answering" to finish.</p>
+  </div>
+
+  <div id="phase-voting" class="box centered" style="display:none;">
+    <h3>Vote for the best answer</h3>
+    <p id="votingPrompt" style="color:#666;"></p>
+    <div id="voteCards"></div>
+    <p id="voteSubmitted" style="display:none; color:#666;">✅ Vote cast! Click "Show Results" to finish.</p>
+  </div>
+
+  <div id="phase-results" class="box centered" style="display:none; text-align:center;">
+    <h2>🏆 Results</h2>
+    <p id="resultsPromptLabel" style="color:#666;"></p>
+    <div id="resultsList"></div>
+  </div>
+
+  <details id="feed" style="margin-top:12px;display: none;">
+    <summary>History</summary>
+  </details>
+</div>
+
+<script type="module">
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+  SimplePool
+} from "https://esm.sh/nostr-tools@2.7.0";
+
+
+const PACK_META_KIND = 30311;
+const PACK_PROMPT_KIND = 30312;
+
+const packs = {};
+
+if(window.location.hash.includes('history')) {
+  document.getElementById('feed').style.display = 'block';
+}
+
+const seenPackEvents = new Set();
+
+const seenPromptEventIds = new Set();
+
+const votes = {};
+
+const packAuthors = {};
+
+let currentPromptEventId = null;
+
+let usingNip7 = false;
+
+const relays = [
+  "wss://nos.lol",
+  "wss://relay.primal.net"
+];
+
+const pool = new SimplePool();
+
+const feed = document.getElementById("feed");
+
+let signer = null;
+let pk = null;
+let gameId = null;
+let hostPk = null; 
+
+const seen = new Set();
+
+const profiles = {}; 
+
+async function fetchProfile(pubkey) {
+  if (!pubkey || profiles[pubkey]) return;
+
+  profiles[pubkey] = { loading: true };
+
+  pool.subscribeMany(
+    relays,
+    [{ kinds: [0], authors: [pubkey] }],
+    {
+      onevent(event) {
+        try {
+          const metadata = JSON.parse(event.content);
+          profiles[pubkey] = metadata;
+          if (phase === "voting") renderVoteCards();
+          if (phase === "results") enterResults();
+        } catch (e) {
+          console.error("Error parsing metadata", e);
+        }
+      }
+    }
+  );
+}
+
+function getName(pubkey) {
+  const p = profiles[pubkey];
+  if (p && !p.loading) {
+    return p.display_name || p.name || pubkey.slice(0, 10) + "...";
+  }
+  return pubkey.slice(0, 10) + "...";
+}
+
+window.createKey = () => {
+  const sk = generateSecretKey();
+
+  pk = getPublicKey(sk);
+
+  signer = {
+    async sign(event) {
+      return finalizeEvent(event, sk);
+    }
+  };
+
+  document.getElementById("pubkey").innerText =
+    "pubkey: " + pk;
+
+  setSignInOrGame("join");
+  updateHostControls();
+};
+
+window.nip7 = async () => {
+  if (!window.nostr) {
+    alert("Please install or unlock a Nostr extension.");
+    return;
+  }
+
+  try {
+    pk = await window.nostr.getPublicKey();
+
+    usingNip7 = true;
+
+    signer = {
+      async sign(event) {
+        return await window.nostr.signEvent(event);
+      }
+    };
+
+    document.getElementById("pubkey").innerText =
+      `pubkey: ${pk}`;
+
+    setSignInOrGame("join");
+    updateHostControls();
+
+  } catch (e) {
+    console.error(e);
+  }
+};
+
+const setView = to => {
+  document.getElementById("start").style.display = to === "start" ? "block" : "none";
+  document.getElementById("game").style.display = to === "game" ? "block" : "none";
+  document.getElementById("packorgame").style.display = to === "start" ? "block" : "none";
+  if (to === "game") {
+    setPhasePanel("phase-waiting");
+    updateHostControls();
+  }
+};
+
+const setSignInOrGame = to => {
+ document.getElementById("signin").style.display = to === "signin" ? "block" : "none";
+ document.getElementById("join").style.display = to === "join" ? "block" : "none";
+
+ document.getElementById("packorgame").style.display = to === "join" ? "block" : "none";
+
+   if (!usingNip7) {
+    document.getElementById('createb').style.display = 'none'
+    document.getElementById('editb').style.display = 'none'
+  }
+};
+
+window.setPackCreateOrGame = to => {
+if(to === "createpack") {
+  document.getElementById("createpack").style.display = "block";
+  document.getElementById("browsepacks").style.display = "none";
+    document.getElementById('editpack').style.display = 'none';
+  document.getElementById('join').style.display = 'none';
+} else if (to === "browsepacks") {
+  document.getElementById("createpack").style.display = "none";
+  document.getElementById('join').style.display = 'none';
+  document.getElementById("browsepacks").style.display = "block";
+    document.getElementById('editpack').style.display = 'none'
+} else if (to === "editpack") {
+  document.getElementById("createpack").style.display = "none";
+  document.getElementById('editpack').style.display = 'block';
+  document.getElementById("browsepacks").style.display = "none";
+  document.getElementById('join').style.display = 'none';
+} else {
+   document.getElementById('join').style.display = 'block';
+   document.getElementById("createpack").style.display = "none";
+   document.getElementById("browsepacks").style.display = "none";
+     document.getElementById('editpack').style.display = 'none';
+} 
+};
+
+window.createGameId = () => {
+  const newGameId = "party_social_" + Math.random().toString(16).slice(2, 8);
+  document.getElementById("gameId").value = newGameId;
+  document.getElementById("gameIdDisplay").innerText = "Game ID: " + newGameId;
+  hostPk = pk;
+  window.joinGame();
+};
+
+window.joinGame = async () => {
+  gameId = document.getElementById("gameId").value;
+
+  if (!gameId.startsWith("party_social_")) {
+    gameId = "party_social_" + gameId;
+    return;
+  }
+
+  pool.subscribeMany(
+    relays,
+    [
+      {
+        kinds: [21000, 21001, 21002, 21003, 21004],
+        "#g": [gameId]
+      }
+    ],
+    {
+      onevent(event) {
+        if (seen.has(event.id)) return;
+        seen.add(event.id);
+
+        if (event.kind === 21000) {
+          hostPk = event.pubkey;
+          updateHostControls();
+          return;
+        }
+
+        handleGameEvent(event);
+      }
+    }
+  );
+
+  if (hostPk === pk && signer) {
+    const gameMetaEvent = await signer.sign({
+      kind: 21000,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [["g", gameId]],
+      content: JSON.stringify({ host: pk }),
+      pubkey: pk
+    });
+    pool.publish(relays, gameMetaEvent);
+  }
+
+  loadPacksInternal();
+
+  setView("game");
+};
+
+function updateHostControls() {
+  const isHost = pk && hostPk && pk === hostPk;
+  const hostBar = document.getElementById("hostBar");
+  if (hostBar) hostBar.style.display = isHost ? "block" : "none";
+  // In idle phase, show the start round button
+  if (isHost && phase === "idle") {
+    setHostButtons("nextPromptBtn");
+  }
+}
+
+// phases: idle | answering | voting | results
+let phase = "idle";
+// roundId: the event.id of the current 21001 prompt event — scopes answers/votes to this round
+let roundId = null;
+// currentPromptText: cached prompt text from the latest 21001, used for rendering and in case 21004 arrives first
+let currentPromptText = "";
+// answers this round: { eventId -> { answer, pubkey } }
+let roundAnswers = {};
+// hasAnswered / hasVoted this round
+let hasAnswered = false;
+let hasVoted = false;
+
+async function broadcastPhase(newPhase, extra = {}) {
+  if (!signer) return;
+  const ev = await signer.sign({
+    kind: 21004,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [["g", gameId]],
+    content: JSON.stringify({ phase: newPhase, roundId, ...extra }),
+    pubkey: pk
+  });
+  pool.publish(relays, ev);
+}
+
+window.startRound = async () => {
+  if (!signer) { alert("sign in first"); return; }
+  const selectedPack = document.getElementById("selectedPack").value;
+  const pack = packs[selectedPack];
+  if (!pack?.prompts?.length) {
+    alert("No prompts in this pack. Load packs first.");
+    return;
+  }
+
+document.getElementById('packsel').style.display = 'none'
+
+  const prompt = pack.prompts[Math.floor(Math.random() * pack.prompts.length)];
+
+  const promptEv = await signer.sign({
+    kind: 21001,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [["g", gameId], ["pack", selectedPack]],
+    content: JSON.stringify({ prompt }),
+    pubkey: pk
+  });
+  pool.publish(relays, promptEv);
+
+  roundId = promptEv.id;
+  await broadcastPhase("answering");
+};
+
+window.endAnswering = async () => {
+  await broadcastPhase("voting");
+};
+
+window.endVoting = async () => {
+  await broadcastPhase("results");
+};
+
+function handleGameEvent(event) {
+
+  fetchProfile(event.pubkey);
+
+  switch (event.kind) {
+    case 21001: return onPrompt(event);
+    case 21002: return onAnswer(event);
+    case 21003: return onVote(event);
+    case 21004: return onPhaseChange(event);
+  }
+}
+
+function onPrompt(event) {
+  let parsed;
+  try { parsed = JSON.parse(event.content); } catch { return; }
+  currentPromptText = parsed.prompt ?? "";
+  if (!roundId) roundId = event.id;
+  addToFeed("📝 Prompt", currentPromptText, event.pubkey, event.id);
+}
+
+function onAnswer(event) {
+  const rTag = event.tags.find(t => t[0] === "e");
+  if (!rTag || rTag[1] !== roundId) return;
+  let parsed;
+  try { parsed = JSON.parse(event.content); } catch { return; }
+  roundAnswers[event.id] = { answer: parsed.answer ?? "", pubkey: event.pubkey };
+
+  if (phase === "voting") renderVoteCards();
+}
+
+function onVote(event) {
+  const eTag = event.tags.find(t => t[0] === "e");
+  if (!eTag) return;
+  const answerId = eTag[1];
+
+  if (!roundAnswers[answerId]) return;
+
+  if (!votes[answerId]) votes[answerId] = new Set();
+  votes[answerId].add(event.pubkey);
+
+  if (event.pubkey === pk) {
+    hasVoted = true;
+    document.getElementById("voteSubmitted").style.display = "block";
+    if (phase === "voting") renderVoteCards();
+  }
+
+  const countEl = document.getElementById("vcount_" + answerId);
+  if (countEl) countEl.innerText = votes[answerId].size;
+}
+
+function renderVoteCards() {
+  const container = document.getElementById("voteCards");
+  container.innerHTML = "";
+  
+  const entries = Object.entries(roundAnswers);
+  if (entries.length === 0) {
+    container.innerHTML = "<p class='muted'>Waiting for answers to appear...</p>";
+    return;
+  }
+
+
+  hasVoted = entries.some(([ansId]) => votes[ansId]?.has(pk));
+  document.getElementById("voteSubmitted").style.display = hasVoted ? "block" : "none";
+
+  for (const [answerId, { answer, pubkey }] of entries) {
+    const isMine = pubkey === pk;
+    const voteCount = votes[answerId]?.size ?? 0;
+    const card = document.createElement("div");
+    card.className = "box";
+    card.style.cursor = isMine || hasVoted ? "default" : "pointer";
+    
+    const displayPk = pubkey ? pubkey.slice(0, 10) + "…" : "Unknown";
+
+    card.innerHTML = `
+      <div>${escapeHtml(answer)}</div>
+      <div class="muted">${isMine ? "<strong>(yours)</strong>" : displayPk} · <span id="vcount_${answerId}">${voteCount}</span> vote(s)</div>
+      ${!isMine && !hasVoted ? `<button onclick="sendVote('${answerId}')">👍 Vote</button>` : ""}
+    `;
+    container.appendChild(card);
+  }
+}
+
+function onPhaseChange(event) {
+  if (event.pubkey !== hostPk) return;
+  let parsed;
+  try { parsed = JSON.parse(event.content); } catch { return; }
+  const { phase: newPhase, roundId: rid } = parsed;
+  if (rid) roundId = rid;
+
+  switch (newPhase) {
+    case "answering": enterAnswering(); break;
+    case "voting":    enterVoting();    break;
+    case "results":   enterResults();   break;
+  }
+}
+
+function setPhasePanel(id) {
+  ["phase-waiting","phase-answering","phase-voting","phase-results"].forEach(p => {
+    document.getElementById(p).style.display = p === id ? "block" : "none";
+  });
+}
+
+function setHostButtons(...ids) {
+  ["nextPromptBtn","endAnsweringBtn","endVotingBtn","nextRoundBtn"].forEach(id => {
+    document.getElementById(id).style.display = ids.includes(id) ? "inline-block" : "none";
+  });
+}
+
+function enterAnswering() {
+  phase = "answering";
+  hasAnswered = false;
+  hasVoted = false;
+  roundAnswers = {};
+  
+  for (let id in votes) delete votes[id]; 
+
+  document.getElementById("promptdisplay").innerText = currentPromptText || "—";
+  document.getElementById("answerArea").style.display = "block";
+  document.getElementById("answerSubmitted").style.display = "none";
+  document.getElementById("answer").value = "";
+  setPhasePanel("phase-answering");
+  if (pk === hostPk) setHostButtons("endAnsweringBtn");
+}
+
+function enterVoting() {
+  phase = "voting";
+  hasVoted = false;
+  document.getElementById("votingPrompt").innerText = currentPromptText;
+  renderVoteCards();
+  document.getElementById("voteSubmitted").style.display = "none";
+  setPhasePanel("phase-voting");
+  if (pk === hostPk) setHostButtons("endVotingBtn");
+}
+
+
+function enterResults() {
+  phase = "results";
+  document.getElementById("resultsPromptLabel").innerText = currentPromptText;
+
+  const sorted = Object.entries(roundAnswers).sort(([a],[b]) => {
+    return (votes[b]?.size ?? 0) - (votes[a]?.size ?? 0);
+  });
+
+  const list = document.getElementById("resultsList");
+  list.innerHTML = "";
+  sorted.forEach(([answerId, { answer, pubkey }], i) => {
+    const voteCount = votes[answerId]?.size ?? 0;
+    const div = document.createElement("div");
+    div.className = "box";
+    div.style.borderColor = i === 0 ? "gold" : "";
+    div.innerHTML = `
+      ${i === 0 ? "<strong>🥇 Winner!</strong><br>" : ""}
+      <div>${escapeHtml(answer)}</div>
+      <div class="muted">${getName(pubkey) || pubkey.slice(0, 10) + "..."} · ${voteCount} vote(s)</div>
+    `;
+    list.appendChild(div);
+  });
+
+  addToFeed("🏆 Round ended", currentPromptText, hostPk, roundId ?? "");
+
+  setPhasePanel("phase-results");
+  if (pk === hostPk) setHostButtons("nextRoundBtn");
+}
+
+window.sendAnswer = async () => {
+  if (!signer) { alert("sign in first"); return; }
+  if (hasAnswered) return;
+  const answerText = document.getElementById("answer").value.trim();
+  if (!answerText) return;
+
+  const ev = await signer.sign({
+    kind: 21002,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [
+      ["g", gameId],
+      ["e", roundId] 
+    ],
+    content: JSON.stringify({ answer: answerText }),
+    pubkey: pk
+  });
+  pool.publish(relays, ev);
+  hasAnswered = true;
+
+  roundAnswers[ev.id] = { answer: answerText, pubkey: pk };
+
+  document.getElementById("answerArea").style.display = "none";
+  document.getElementById("answerSubmitted").style.display = "block";
+};
+
+window.sendVote = async (answerId) => {
+  if (!signer) { alert("sign in first"); return; }
+  if (hasVoted) { alert("already voted"); return; }
+  if (roundAnswers[answerId]?.pubkey === pk) { alert("can't vote for yourself"); return; }
+
+  const ev = await signer.sign({
+    kind: 21003,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [["g", gameId], ["e", answerId]],
+    content: "",
+    pubkey: pk
+  });
+  pool.publish(relays, ev);
+  hasVoted = true;
+
+  if (!votes[answerId]) votes[answerId] = new Set();
+  votes[answerId].add(pk);
+
+  renderVoteCards();
+  document.getElementById("voteSubmitted").style.display = "block";
+};
+
+function addToFeed(label, text, pubkey, id) {
+  const div = document.createElement("div");
+  div.className = "box";
+  div.id = "feedev_" + id;
+  div.innerHTML = `
+    <div><b>${label}</b></div>
+    <div>${escapeHtml(text)}</div>
+    <div class="muted">${pubkey.slice(0,12)}…</div>
+  `;
+  feed.prepend(div);
+}
+
+window.createPack = async () => {
+  if (!signer) {
+    alert("sign in first");
+    return;
+  }
+
+  const name =
+    document.getElementById("packName")
+      .value
+      .trim();
+
+  const description =
+    document.getElementById("packDescription")
+      .value
+      .trim();
+
+  if (!name) {
+    alert("missing name");
+    return;
+  }
+
+  const packId =
+    "pack_" + crypto.randomUUID();
+
+  const unsignedEvent = {
+    kind: PACK_META_KIND,
+
+    created_at:
+      Math.floor(Date.now() / 1000),
+
+    tags: [
+      ["d", packId],
+      ["type", "party_social_pack"]
+    ],
+
+    content: JSON.stringify({
+      name,
+      description
+    }),
+
+    pubkey: pk
+  };
+
+  const signedEvent =
+    await signer.sign(unsignedEvent);
+
+  pool.publish(relays, signedEvent);
+
+  packs[packId] = { meta: { name, description }, prompts: [] };
+  seenPackEvents.add(signedEvent.id);
+  renderPacks();
+
+  document.getElementById("packName").value = "";
+  document.getElementById("packDescription").value = "";
+
+  alert("pack created");
+};
+
+window.createPackPrompt = async () => {
+  if (!signer) {
+    alert("sign in first");
+    return;
+  }
+
+  const packId =
+    document.getElementById("promptPackSelect")
+      .value;
+
+  const prompt =
+    document.getElementById("packPrompt")
+      .value
+      .trim();
+
+  if (!packId || !prompt) {
+    alert("missing fields");
+    return;
+  }
+
+  const unsignedEvent = {
+    kind: PACK_PROMPT_KIND,
+
+    created_at:
+      Math.floor(Date.now() / 1000),
+
+    tags: [
+      ["pack", packId],
+      ["type", "party_social_prompt"]
+    ],
+
+    content: JSON.stringify({
+      prompt
+    }),
+
+    pubkey: pk
+  };
+
+  const signedEvent =
+    await signer.sign(unsignedEvent);
+
+  pool.publish(relays, signedEvent);
+
+  if (!packs[packId]) {
+    packs[packId] = { meta: null, prompts: [] };
+  }
+  if (!seenPromptEventIds.has(signedEvent.id)) {
+    seenPromptEventIds.add(signedEvent.id);
+    seenPackEvents.add(signedEvent.id);
+    packs[packId].prompts.push(prompt);
+    renderPacks();
+  }
+
+  document.getElementById("packPrompt").value = "";
+
+  alert("prompt added");
+};
+
+let renderPacksTimer = null;
+function scheduleRenderPacks() {
+  clearTimeout(renderPacksTimer);
+  renderPacksTimer = setTimeout(renderPacks, 100);
+}
+
+function loadPacksInternal() {
+  for (let id in packs) delete packs[id];
+  seenPackEvents.clear();
+  seenPromptEventIds.clear();
+  for (let id in packAuthors) delete packAuthors[id];
+
+  pool.subscribeMany(
+    relays,
+    [
+      { kinds: [PACK_META_KIND, PACK_PROMPT_KIND, 5] }
+    ],
+    {
+      onevent(event) {
+        if (event.kind === 5) {
+          const aTag = event.tags.find(t => t[0] === "a");
+          if (aTag) {
+            const [kind, pubkey, dTag] = aTag[1].split(":");
+            if (dTag && packs[dTag]) {
+              delete packs[dTag];
+              scheduleRenderPacks();
+            }
+          }
+          return;
+        }
+
+        if (seenPackEvents.has(event.id)) return;
+        seenPackEvents.add(event.id);
+
+        const typeTag = event.tags.find(t => t[0] === "type");
+        if (!typeTag) return;
+
+        if (event.kind === PACK_META_KIND && typeTag[1] === "party_social_pack") {
+          const dTag = event.tags.find(t => t[0] === "d");
+          if (!dTag) return;
+          const packId = dTag[1];
+
+          try {
+            const parsed = JSON.parse(event.content);
+            packAuthors[packId] = event.pubkey;
+            if (!packs[packId]) {
+              packs[packId] = { meta: parsed, prompts: [] };
+            } else {
+              packs[packId].meta = parsed;
+            }
+          } catch (e) { return; }
+        }
+
+        // PACK PROMPT (Kind 30312)
+        if (event.kind === PACK_PROMPT_KIND && typeTag[1] === "party_social_prompt") {
+          const packTag = event.tags.find(t => t[0] === "pack");
+          if (!packTag) return;
+          const packId = packTag[1];
+
+          if (seenPromptEventIds.has(event.id)) return;
+          
+          try {
+            const parsed = JSON.parse(event.content);
+            if (!packs[packId]) {
+              packs[packId] = { meta: null, prompts: [] };
+            }
+              packs[packId].prompts.push(parsed.prompt);
+  packs[packId].promptIds.push(event.id); 
+  seenPromptEventIds.add(event.id);
+          } catch (e) { return; }
+        }
+
+        scheduleRenderPacks();
+      }
+    }
+  );
+}
+
+window.loadPacks = () => {
+  loadPacksInternal();
+};
+
+function renderPacks() {
+  const container =
+    document.getElementById("packs");
+
+  const select =
+    document.getElementById("selectedPack");
+
+  const promptSelect =
+    document.getElementById("promptPackSelect");
+
+  container.innerHTML = "";
+
+  select.innerHTML = "";
+
+  promptSelect.innerHTML = "";
+
+  for (const packId in packs) {
+    const pack = packs[packId];
+
+    if (!pack.meta || !pack.meta.name) continue;
+
+    const option =
+      document.createElement("option");
+
+    option.value = packId;
+
+    option.innerText =
+      `${pack.meta.name} (${pack.prompts.length})`;
+
+    select.appendChild(option);
+
+    // PROMPT SELECT
+    const option2 =
+      document.createElement("option");
+
+    option2.value = packId;
+
+    option2.innerText =
+      pack.meta.name;
+
+    promptSelect.appendChild(option2);
+
+    // VISUAL CARD
+       const div = document.createElement("div");
+    div.className = "box";
+
+    const isOwner = pk && packAuthors[packId] === pk;
+
+    div.innerHTML = `
+      <h3>${escapeHtml(pack.meta.name)}</h3>
+      <div>${escapeHtml(pack.meta.description || "")}</div>
+      <div class="muted">${pack.prompts.length} prompts</div>
+      ${isOwner ? `
+        <button 
+          onclick="deletePack('${packId}')" 
+          style="margin-top:10px; background-color:#e74c3c; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer;">
+          Delete Pack
+        </button>
+      ` : ""}
+    `;
+
+    container.appendChild(div);
+  }
+}
+
+window.filterPacks = () => {
+  const query = document.getElementById("packSearch")?.value.toLowerCase() ?? "";
+  const cards = document.querySelectorAll("#packs .box");
+  cards.forEach(card => {
+    const name = card.querySelector("h3")?.innerText.toLowerCase() ?? "";
+    const desc = card.querySelector("div")?.innerText.toLowerCase() ?? "";
+    card.style.display = (!query || name.includes(query) || desc.includes(query)) ? "" : "none";
+  });
+};
+
+window.usePack = packId => {
+  const pack = packs[packId];
+
+  if (!pack?.prompts?.length) return;
+
+  const random =
+    pack.prompts[
+      Math.floor(Math.random() * pack.prompts.length)
+    ];
+
+  document.getElementById("prompt").value =
+    random;
+};
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, m => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;"
+  }[m]));
+}
+
+window.nextPrompt = async () => {
+  if (!signer) {
+    alert("sign in first");
+    return;
+  }
+
+  const selectedPack =
+    document.getElementById("selectedPack")
+      .value;
+
+  const pack = packs[selectedPack];
+
+  if (!pack?.prompts?.length) {
+    alert("No prompts loaded for this pack. Try clicking Load Packs first.");
+    return;
+  }
+
+  const random =
+    pack.prompts[
+      Math.floor(
+        Math.random() * pack.prompts.length
+      )
+    ];
+
+  const unsignedEvent = {
+    kind: 21001,
+
+    created_at:
+      Math.floor(Date.now() / 1000),
+
+    tags: [
+      ["g", gameId],
+      ["pack", selectedPack]
+    ],
+
+    content: JSON.stringify({
+      prompt: random
+    }),
+
+    pubkey: pk
+  };
+
+  const signedEvent =
+    await signer.sign(unsignedEvent);
+
+  pool.publish(relays, signedEvent);
+};
+
+window.deletePack = async (packId) => {
+  if (!signer || !pk) return alert("Sign in first.");
+  if (packAuthors[packId] !== pk) return alert("You only own your own packs.");
+
+  if (!confirm(`Delete "${packs[packId].meta.name}" and all its prompts?`)) return;
+
+  const promptIds = packs[packId].promptIds || [];
+
+  const tombstone = {
+    kind: PACK_META_KIND,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [
+      ["d", packId],
+      ["type", "party_social_pack"],
+      ["deleted", "true"] 
+    ],
+    content: JSON.stringify({ name: "", description: "DELETED", deleted: true }),
+    pubkey: pk
+  };
+
+  const deletion = {
+    kind: 5,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [
+      ["a", `${PACK_META_KIND}:${pk}:${packId}`],
+      ...promptIds.map(id => ["e", id])
+    ],
+    content: "Removing pack and prompts",
+    pubkey: pk
+  };
+
+  try {
+    const signedTombstone = await signer.sign(tombstone);
+    const signedDeletion = await signer.sign(deletion);
+    
+    await Promise.all([
+      pool.publish(relays, signedTombstone),
+      pool.publish(relays, signedDeletion)
+    ]);
+
+    delete packs[packId];
+    renderPacks();
+    alert("Pack and associated prompts deleted.");
+  } catch (e) {
+    console.error("Deletion failed", e);
+  }
+};
+
+</script>
+
+</body>
+</html>
