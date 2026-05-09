@@ -111,3 +111,26 @@ input, select {
     width: 100%;
     text-align: center;
 }
+
+dialog {
+    width: 50%;
+    border-radius: 10px;
+    border: none;
+}
+
+dialog[open] {
+  display: flex;
+  flex-direction: column;
+     flex-direction: column;
+    align-items: center;
+}
+
+#menu{
+  position: fixed;
+  margin-left: 12px;
+  cursor: pointer;
+}
+
+#menu span {
+margin-right: 10px;
+}

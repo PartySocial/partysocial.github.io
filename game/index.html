@@ -6,10 +6,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="Party Social is a collection of interactive games built on Nostr. Create and share your own game packs, or play with friends!" />
   <link rel="stylesheet" href="./style.css" />
-
-</head>
+  <script src="./top.js"></script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" /></head>
 
 <body>
+
+  <top-bar></top-bar>
 
 <h2>Party Social</h2>
 <div id="packorgame" style="text-align: center;display: none;">
@@ -77,8 +79,14 @@
 <div id="game">
 
   <div id="hostBar" style="display:none;" class="box">
-    <span id="packsel">Pack: <select id="selectedPack" style="width: 20%;"></select></span>
-    <button id="nextPromptBtn" onclick="startRound()" style="display:none;">▶ Start Round</button>
+    <div id="packsel">
+      
+      <button command="show-modal" commandfor="my-dialog">Use Giphy</button>
+      or
+      pack: <select id="selectedPack" style="width: 20%;"></select>
+
+    </div>
+    <button id="nextPromptBtn" onclick="startRound()" style="display:none;width: 50%;">▶ Start Round</button>
     <button id="endAnsweringBtn" onclick="endAnswering()" style="display:none;">⏹ End Answering</button>
     <button id="endVotingBtn" onclick="endVoting()" style="display:none;">🏆 Show Results</button>
     <button id="nextRoundBtn" onclick="startRound()" style="display:none;">⏭ Next Round</button>
@@ -115,7 +123,29 @@
   <details id="feed" style="margin-top:12px;display: none;">
     <summary>History</summary>
   </details>
+  
 </div>
+
+
+<dialog id="my-dialog">
+  <h3>Giphy Settings</h3>
+  <span>
+      <input type="checkbox" id="useGiphyCheckbox"/> <label for="useGiphyCheckbox">Use GIFs as prompts</label>
+  </span>
+  <p>API Key</p>
+  <input id="giphyKeyInput" placeholder="Enter Giphy API Key" style="width: 80%;" />
+  <p>Tags</p>
+  <input id="giphyTagsInput" placeholder="Enter tags (comma-separated)" style="width: 80%;"  />
+  <p>Rating</p>
+  <select id="giphyRatingSelect" >
+    <option value="g">G</option>
+    <option value="pg">PG</option>
+    <option value="pg-13">PG-13</option>
+    <option value="r">R</option>
+  </select>
+  <button commandfor="my-dialog" style="width: 100%;" command="close">Close</button>
+</dialog>
+
 
 <script type="module">
 import {
@@ -146,6 +176,33 @@ const packAuthors = {};
 let currentPromptEventId = null;
 
 let usingNip7 = false;
+
+const params = new URLSearchParams(window.location.search);
+
+let USE_GIPHY = () => document.getElementById("useGiphyCheckbox").checked;
+
+let GIPHY_KEY = () => document.getElementById("giphyKeyInput").value;
+
+let GIPHY_QUERY = () => document.getElementById("giphyTagsInput").value.split(",").map(t => t.trim()).filter(t => t).join("+") || "funny";
+
+let GIPHY_RATING = () => document.getElementById("giphyRatingSelect").value;
+
+const fetchGiphy = async () => {
+  if (!GIPHY_KEY()) {
+    alert("Please set your Giphy API key first!");
+    return "err:no_key";
+  }
+  try {
+    const url = `https://api.giphy.com/v1/gifs/random?api_key=${GIPHY_KEY()}&tag=${encodeURIComponent(GIPHY_QUERY())}&rating=${GIPHY_RATING()}`;
+    console.log("Fetching Giphy with URL:", url);
+    const res = await fetch(url);
+    const data = await res.json();
+    return data.data?.images?.downsized_medium?.url || 'err:no_downsized_medium';
+  } catch (e) {
+    console.error("Error fetching from Giphy", e);
+    return 'err:fetch_error';
+  }
+};
 
 const relays = [
   "wss://nos.lol",
@@ -187,6 +244,11 @@ async function fetchProfile(pubkey) {
     }
   );
 }
+
+
+    window.shareURL = () => {
+    return params.has('id') ? window.location : location.href + "?id=" + document.getElementById("gameId").value;
+    }
 
 function getName(pubkey) {
   const p = profiles[pubkey];
@@ -380,16 +442,21 @@ async function broadcastPhase(newPhase, extra = {}) {
 
 window.startRound = async () => {
   if (!signer) { alert("sign in first"); return; }
+  if(USE_GIPHY() && !GIPHY_KEY()) {
+    alert("Please set your Giphy API key first!");
+    return;
+  }
   const selectedPack = document.getElementById("selectedPack").value;
   const pack = packs[selectedPack];
-  if (!pack?.prompts?.length) {
+  if (!USE_GIPHY && !pack?.prompts?.length) {
     alert("No prompts in this pack. Load packs first.");
     return;
   }
 
 document.getElementById('packsel').style.display = 'none'
 
-  const prompt = pack.prompts[Math.floor(Math.random() * pack.prompts.length)];
+  const prompt = USE_GIPHY() ? `giphy:${await fetchGiphy()}` :
+  pack.prompts[Math.floor(Math.random() * pack.prompts.length)];
 
   const promptEv = await signer.sign({
     kind: 21001,
@@ -427,7 +494,8 @@ function handleGameEvent(event) {
 function onPrompt(event) {
   let parsed;
   try { parsed = JSON.parse(event.content); } catch { return; }
-  currentPromptText = parsed.prompt ?? "";
+  currentPromptText = parsed.prompt.startsWith('giphy:') ? `<img src="${parsed.prompt.slice(6)}" style="max-width:300px;max-height:200px;" />`
+  : parsed.prompt ?? "";
   if (!roundId) roundId = event.id;
   addToFeed("📝 Prompt", currentPromptText, event.pubkey, event.id);
 }
@@ -528,7 +596,7 @@ function enterAnswering() {
   
   for (let id in votes) delete votes[id]; 
 
-  document.getElementById("promptdisplay").innerText = currentPromptText || "—";
+  document.getElementById("promptdisplay").innerHTML = currentPromptText || "—";
   document.getElementById("answerArea").style.display = "block";
   document.getElementById("answerSubmitted").style.display = "none";
   document.getElementById("answer").value = "";
@@ -539,7 +607,7 @@ function enterAnswering() {
 function enterVoting() {
   phase = "voting";
   hasVoted = false;
-  document.getElementById("votingPrompt").innerText = currentPromptText;
+  document.getElementById("votingPrompt").innerHTML = currentPromptText;
   renderVoteCards();
   document.getElementById("voteSubmitted").style.display = "none";
   setPhasePanel("phase-voting");
@@ -549,7 +617,7 @@ function enterVoting() {
 
 function enterResults() {
   phase = "results";
-  document.getElementById("resultsPromptLabel").innerText = currentPromptText;
+  document.getElementById("resultsPromptLabel").innerHTML = currentPromptText;
 
   const sorted = Object.entries(roundAnswers).sort(([a],[b]) => {
     return (votes[b]?.size ?? 0) - (votes[a]?.size ?? 0);
@@ -1028,6 +1096,11 @@ window.deletePack = async (packId) => {
   }
 };
 
+
+
+    if (params.has('id')) {
+      document.getElementById('gameId').value = params.get('id')
+    }
 </script>
 
 </body>
