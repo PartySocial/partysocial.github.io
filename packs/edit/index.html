@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Edit Pack - Party Social</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Browse and play community-made packs for Party Social." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@400;500&display=swap" />
+    <link rel="stylesheet" href="../style.css" />
+        <script src="../../consts.js"></script>
+</head>
+<body>
+
+<header>
+  <a href="/" class="logo">
+    Party Social
+  </a>
+  <div class="header-actions">
+    <a href="/packs" class="btn btn-outline">Find Packs</a>
+     <a href="/packs/create" class="btn btn-outline">Create Pack</a>
+     <a href="/packs/edit" class="btn btn-outline">Edit Pack</a>
+  </div>
+
+  <style>
+    input, button, select {
+      margin: 10px;
+      width: 90% !important;
+        padding: 10px 15px;
+        border-radius: var(--radius);
+        background: var(--card-bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+    }
+
+    #form {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+       margin: 30px auto;
+    }
+  </style>
+</header>
+
+<section class="hero">
+  <h1>Add a prompt to <em class="accent">your pack</em>.</h1>
+</section>
+
+
+<div id="form">
+  <button onclick="loadPacks()">
+    Load Packs
+  </button>
+
+  <select id="promptPackSelect"></select>
+
+  <input id="packPrompt" placeholder="prompt text" />
+
+  <button onclick="createPackPrompt()">
+    Add Prompt
+  </button>
+</div>
+
+<script type="module">
+
+import {
+  generateSecretKey,
+  getPublicKey,
+  finalizeEvent,
+  SimplePool
+} from "https://esm.sh/nostr-tools@2.7.0";
+
+  let pk = null;
+
+  const packs = {};
+
+  const seenEvents = new Set();
+
+  const deletedIds = new Set();
+  
+  const pool = new SimplePool();
+
+  const relays = RELAYS;
+ 
+ async function tryGetPk() {
+  try {
+    if (window.nostr) pk = await window.nostr.getPublicKey();
+  } catch {
+        alert("Fail to get public key, make sure you have a Nostr extension installed and refresh the page");
+    return location.href = "/";
+  }
+}
+
+window.onload = tryGetPk;
+
+window.createPackPrompt = async () => {
+
+  const signer = await window?.nostr?.signEvent;
+
+  if (!signer) {
+    alert("No signer found, make sure you have a Nostr extension installed");
+    return;
+  }
+
+  const packId =
+    document.getElementById("promptPackSelect")
+      .value;
+
+  const prompt =
+    document.getElementById("packPrompt")
+      .value
+      .trim();
+
+  if (!packId || !prompt) {
+    alert("missing fields");
+    return;
+  }
+
+  const unsignedEvent = {
+    kind: PACK_PROMPT_KIND,
+
+    created_at:
+      Math.floor(Date.now() / 1000),
+
+    tags: [
+      ["pack", packId],
+      ["type", "party_social_prompt"]
+    ],
+
+    content: JSON.stringify({
+      prompt
+    }),
+
+    pubkey: pk
+  };
+
+  const signedEvent =
+    await signer(unsignedEvent);
+
+  pool.publish(relays, signedEvent);
+
+  if (!packs[packId]) {
+    packs[packId] = { meta: null, prompts: [] };
+  }
+  if (!seenEvents.has(signedEvent.id)) {
+    seenEvents.add(signedEvent.id);
+    packs[packId].prompts.push(prompt);
+  }
+
+  document.getElementById("packPrompt").value = "";
+
+  alert("prompt added");
+};
+
+
+window.loadPacks = () => {
+  for (const id in packs) delete packs[id];
+  seenEvents.clear();
+
+  pool.subscribeMany(RELAYS, [{ kinds: [PACK_META_KIND, PACK_PROMPT_KIND, 5] }], {
+    onevent(event) {
+      if (seenEvents.has(event.id)) return;
+      seenEvents.add(event.id);
+
+            if (event.kind === 5) {
+        const aTag = event.tags.find(t => t[0] === "a");
+        if (aTag) {
+          const [,, dTag] = aTag[1].split(":");
+          if (dTag) deletedIds.add(dTag);
+        }
+        event.tags.filter(t => t[0] === "e").forEach(t => deletedIds.add(t[1]));
+        return;
+      }
+
+      const typeTag = event.tags.find(t => t[0] === "type");
+      if (!typeTag) return;
+
+      // Pack meta
+      if (event.kind === PACK_META_KIND && typeTag[1] === "party_social_pack") {
+        const dTag = event.tags.find(t => t[0] === "d");
+        if (!dTag) return;
+        const packId = dTag[1];
+
+        try {
+          const meta = JSON.parse(event.content);
+          if (meta.deleted) { deletedIds.add(packId); return; }
+
+          if (!packs[packId]) {
+            packs[packId] = { meta, prompts: [], promptIds: [], pubkey: event.pubkey, createdAt: event.created_at };
+          } else {
+            // prefer most-recent meta event
+            if (event.created_at >= (packs[packId].createdAt || 0)) {
+              packs[packId].meta      = meta;
+              packs[packId].pubkey    = event.pubkey;
+              packs[packId].createdAt = event.created_at;
+            }
+          }
+        } catch {}
+        console.log("loaded pack meta", packId, packs[packId]);
+        const option = document.createElement("option");
+        option.value = packId;
+        option.textContent = packs[packId].meta.name;
+        document.getElementById("promptPackSelect").appendChild(option);
+        return;
+      }
+    }
+  });
+}
+</script>

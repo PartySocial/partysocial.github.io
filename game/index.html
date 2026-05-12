@@ -7,6 +7,7 @@
   <meta name="description" content="Party Social is a collection of interactive games built on Nostr. Create and share your own game packs, or play with friends!" />
   <link rel="stylesheet" href="./style.css" />
   <script src="./top.js"></script>
+  <script src="../consts.js"></script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" /></head>
 
 <body>
@@ -14,16 +15,10 @@
   <top-bar></top-bar>
 
 <h2>Party Social</h2>
-<div id="packorgame" style="text-align: center;display: none;">
-<button onclick="setPackCreateOrGame('game')">Play Game</button>
-<button id="createb" onclick="setPackCreateOrGame('createpack')">Create Pack</button>
-<button id="editb" onclick="setPackCreateOrGame('editpack')">Edit Pack</button>
-<button onclick="setPackCreateOrGame('browsepacks')">Browse Packs</button>
-</div>
 
 <div id="start" class="centered">
   <div class="box centered" id="signin">
-    <h2>Sign In</h2>
+    <h2>Play as</h2>
   <button onclick="createKey()">Guest</button>
     <button onclick="nip7()">NIP-7</button>
   <div id="pubkey" class="muted"></div>
@@ -37,32 +32,6 @@
 </div>
 </div>
 
-  <div class="centered" id="createpack" style="display: none;">
-  <h2>Create Pack</h2>
-
-  <input id="packName" placeholder="pack name" />
-  <input id="packDescription" placeholder="description" />
-<br>
-  <button onclick="createPack()">
-    Create Pack
-  </button>
-</div>
-
-<div class="centered" id="editpack" style="display: none;">
-  <h2>Edit Pack</h2>
-
-  <button onclick="loadPacks()">
-    Load Packs
-  </button>
-
-  <select id="promptPackSelect"></select>
-
-  <input id="packPrompt" placeholder="prompt text" />
-
-  <button onclick="createPackPrompt()">
-    Add Prompt
-  </button>
-</div>
 
 <div class="centered" id="browsepacks" style="display: none;text-align: center;">
   <h2>Browse Packs</h2>
@@ -81,9 +50,8 @@
   <div id="hostBar" style="display:none;" class="box">
     <div id="packsel">
       
-      <button command="show-modal" commandfor="my-dialog">Use Giphy</button>
-      or
-      pack: <select id="selectedPack" style="width: 20%;"></select>
+      <button command="show-modal" commandfor="my-dialog">Giphy Settings</button>
+ <select id="selectedPack" style="display: none;"></select>
 
     </div>
     <button id="nextPromptBtn" onclick="startRound()" style="display:none;width: 50%;">▶ Start Round</button>
@@ -156,11 +124,8 @@ import {
   SimplePool
 } from "https://esm.sh/nostr-tools@2.7.0";
 
-
-const PACK_META_KIND = 30311;
-const PACK_PROMPT_KIND = 30312;
-
 const packs = {};
+
 
 if(window.location.hash.includes('history')) {
   document.getElementById('feed').style.display = 'block';
@@ -205,10 +170,7 @@ const fetchGiphy = async () => {
   }
 };
 
-const relays = [
-  "wss://nos.lol",
-  "wss://relay.primal.net"
-];
+const relays = RELAYS
 
 const pool = new SimplePool();
 
@@ -308,7 +270,6 @@ window.nip7 = async () => {
 const setView = to => {
   document.getElementById("start").style.display = to === "start" ? "block" : "none";
   document.getElementById("game").style.display = to === "game" ? "block" : "none";
-  document.getElementById("packorgame").style.display = to === "start" ? "block" : "none";
   if (to === "game") {
     setPhasePanel("phase-waiting");
     updateHostControls();
@@ -318,40 +279,14 @@ const setView = to => {
 const setSignInOrGame = to => {
  document.getElementById("signin").style.display = to === "signin" ? "block" : "none";
  document.getElementById("join").style.display = to === "join" ? "block" : "none";
-
- document.getElementById("packorgame").style.display = to === "join" ? "block" : "none";
-
-   if (!usingNip7) {
-    document.getElementById('createb').style.display = 'none'
-    document.getElementById('editb').style.display = 'none'
-  }
-};
-
-window.setPackCreateOrGame = to => {
-if(to === "createpack") {
-  document.getElementById("createpack").style.display = "block";
-  document.getElementById("browsepacks").style.display = "none";
-    document.getElementById('editpack').style.display = 'none';
-  document.getElementById('join').style.display = 'none';
-} else if (to === "browsepacks") {
-  document.getElementById("createpack").style.display = "none";
-  document.getElementById('join').style.display = 'none';
-  document.getElementById("browsepacks").style.display = "block";
-    document.getElementById('editpack').style.display = 'none'
-} else if (to === "editpack") {
-  document.getElementById("createpack").style.display = "none";
-  document.getElementById('editpack').style.display = 'block';
-  document.getElementById("browsepacks").style.display = "none";
-  document.getElementById('join').style.display = 'none';
-} else {
-   document.getElementById('join').style.display = 'block';
-   document.getElementById("createpack").style.display = "none";
-   document.getElementById("browsepacks").style.display = "none";
-     document.getElementById('editpack').style.display = 'none';
-} 
 };
 
 window.createGameId = () => {
+
+  if(!params.has("pack")) {
+    location = '/packs'
+  }
+
   const newGameId = "party_social_" + Math.random().toString(16).slice(2, 8);
   document.getElementById("gameId").value = newGameId;
   document.getElementById("gameIdDisplay").innerText = "Game ID: " + newGameId;
@@ -401,8 +336,6 @@ window.joinGame = async () => {
     });
     pool.publish(relays, gameMetaEvent);
   }
-
-  loadPacksInternal();
 
   setView("game");
 };
@@ -704,279 +637,6 @@ function addToFeed(label, text, pubkey, id) {
   feed.prepend(div);
 }
 
-window.createPack = async () => {
-  if (!signer) {
-    alert("sign in first");
-    return;
-  }
-
-  const name =
-    document.getElementById("packName")
-      .value
-      .trim();
-
-  const description =
-    document.getElementById("packDescription")
-      .value
-      .trim();
-
-  if (!name) {
-    alert("missing name");
-    return;
-  }
-
-  const packId =
-    "pack_" + crypto.randomUUID();
-
-  const unsignedEvent = {
-    kind: PACK_META_KIND,
-
-    created_at:
-      Math.floor(Date.now() / 1000),
-
-    tags: [
-      ["d", packId],
-      ["type", "party_social_pack"]
-    ],
-
-    content: JSON.stringify({
-      name,
-      description
-    }),
-
-    pubkey: pk
-  };
-
-  const signedEvent =
-    await signer.sign(unsignedEvent);
-
-  pool.publish(relays, signedEvent);
-
-  packs[packId] = { meta: { name, description }, prompts: [] };
-  seenPackEvents.add(signedEvent.id);
-  renderPacks();
-
-  document.getElementById("packName").value = "";
-  document.getElementById("packDescription").value = "";
-
-  alert("pack created");
-};
-
-window.createPackPrompt = async () => {
-  if (!signer) {
-    alert("sign in first");
-    return;
-  }
-
-  const packId =
-    document.getElementById("promptPackSelect")
-      .value;
-
-  const prompt =
-    document.getElementById("packPrompt")
-      .value
-      .trim();
-
-  if (!packId || !prompt) {
-    alert("missing fields");
-    return;
-  }
-
-  const unsignedEvent = {
-    kind: PACK_PROMPT_KIND,
-
-    created_at:
-      Math.floor(Date.now() / 1000),
-
-    tags: [
-      ["pack", packId],
-      ["type", "party_social_prompt"]
-    ],
-
-    content: JSON.stringify({
-      prompt
-    }),
-
-    pubkey: pk
-  };
-
-  const signedEvent =
-    await signer.sign(unsignedEvent);
-
-  pool.publish(relays, signedEvent);
-
-  if (!packs[packId]) {
-    packs[packId] = { meta: null, prompts: [] };
-  }
-  if (!seenPromptEventIds.has(signedEvent.id)) {
-    seenPromptEventIds.add(signedEvent.id);
-    seenPackEvents.add(signedEvent.id);
-    packs[packId].prompts.push(prompt);
-    renderPacks();
-  }
-
-  document.getElementById("packPrompt").value = "";
-
-  alert("prompt added");
-};
-
-let renderPacksTimer = null;
-function scheduleRenderPacks() {
-  clearTimeout(renderPacksTimer);
-  renderPacksTimer = setTimeout(renderPacks, 100);
-}
-
-function loadPacksInternal() {
-  for (let id in packs) delete packs[id];
-  seenPackEvents.clear();
-  seenPromptEventIds.clear();
-  for (let id in packAuthors) delete packAuthors[id];
-
-  pool.subscribeMany(
-    relays,
-    [
-      { kinds: [PACK_META_KIND, PACK_PROMPT_KIND, 5] }
-    ],
-    {
-      onevent(event) {
-        if (event.kind === 5) {
-          const aTag = event.tags.find(t => t[0] === "a");
-          if (aTag) {
-            const [kind, pubkey, dTag] = aTag[1].split(":");
-            if (dTag && packs[dTag]) {
-              delete packs[dTag];
-              scheduleRenderPacks();
-            }
-          }
-          return;
-        }
-
-        if (seenPackEvents.has(event.id)) return;
-        seenPackEvents.add(event.id);
-
-        const typeTag = event.tags.find(t => t[0] === "type");
-        if (!typeTag) return;
-
-        if (event.kind === PACK_META_KIND && typeTag[1] === "party_social_pack") {
-          const dTag = event.tags.find(t => t[0] === "d");
-          if (!dTag) return;
-          const packId = dTag[1];
-
-          try {
-            const parsed = JSON.parse(event.content);
-            packAuthors[packId] = event.pubkey;
-            if (!packs[packId]) {
-              packs[packId] = { meta: parsed, prompts: [] };
-            } else {
-              packs[packId].meta = parsed;
-            }
-          } catch (e) { return; }
-        }
-
-        // PACK PROMPT (Kind 30312)
-        if (event.kind === PACK_PROMPT_KIND && typeTag[1] === "party_social_prompt") {
-          const packTag = event.tags.find(t => t[0] === "pack");
-          if (!packTag) return;
-          const packId = packTag[1];
-
-          if (seenPromptEventIds.has(event.id)) return;
-          
-          try {
-            const parsed = JSON.parse(event.content);
-            if (!packs[packId]) {
-              packs[packId] = { meta: null, prompts: [] };
-            }
-              packs[packId].prompts.push(parsed.prompt);
-  packs[packId].promptIds.push(event.id); 
-  seenPromptEventIds.add(event.id);
-          } catch (e) { return; }
-        }
-
-        scheduleRenderPacks();
-      }
-    }
-  );
-}
-
-window.loadPacks = () => {
-  loadPacksInternal();
-};
-
-function renderPacks() {
-  const container =
-    document.getElementById("packs");
-
-  const select =
-    document.getElementById("selectedPack");
-
-  const promptSelect =
-    document.getElementById("promptPackSelect");
-
-  container.innerHTML = "";
-
-  select.innerHTML = "";
-
-  promptSelect.innerHTML = "";
-
-  for (const packId in packs) {
-    const pack = packs[packId];
-
-    if (!pack.meta || !pack.meta.name) continue;
-
-    const option =
-      document.createElement("option");
-
-    option.value = packId;
-
-    option.innerText =
-      `${pack.meta.name} (${pack.prompts.length})`;
-
-    select.appendChild(option);
-
-    // PROMPT SELECT
-    const option2 =
-      document.createElement("option");
-
-    option2.value = packId;
-
-    option2.innerText =
-      pack.meta.name;
-
-    promptSelect.appendChild(option2);
-
-    // VISUAL CARD
-       const div = document.createElement("div");
-    div.className = "box";
-
-    const isOwner = pk && packAuthors[packId] === pk;
-
-    div.innerHTML = `
-      <h3>${escapeHtml(pack.meta.name)}</h3>
-      <div>${escapeHtml(pack.meta.description || "")}</div>
-      <div class="muted">${pack.prompts.length} prompts</div>
-      ${isOwner ? `
-        <button 
-          onclick="deletePack('${packId}')" 
-          style="margin-top:10px; background-color:#e74c3c; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer;">
-          Delete Pack
-        </button>
-      ` : ""}
-    `;
-
-    container.appendChild(div);
-  }
-}
-
-window.filterPacks = () => {
-  const query = document.getElementById("packSearch")?.value.toLowerCase() ?? "";
-  const cards = document.querySelectorAll("#packs .box");
-  cards.forEach(card => {
-    const name = card.querySelector("h3")?.innerText.toLowerCase() ?? "";
-    const desc = card.querySelector("div")?.innerText.toLowerCase() ?? "";
-    card.style.display = (!query || name.includes(query) || desc.includes(query)) ? "" : "none";
-  });
-};
-
 window.usePack = packId => {
   const pack = packs[packId];
 
@@ -1102,6 +762,64 @@ window.deletePack = async (packId) => {
     if (params.has('id')) {
       document.getElementById('gameId').value = params.get('id')
     }
+
+    async function loadSinglePack(packId) {
+  if (!packId || packId === 'giphy') return;
+
+  // 1. Initialize immediately to prevent 'undefined' errors
+  packs[packId] = { meta: {}, prompts: [], promptIds: [] };
+
+  const sub = pool.subscribeMany(
+    relays,
+    [
+      { 
+        kinds: [PACK_META_KIND], 
+        "#d": [packId] // Standard indexed tag
+      },
+      { 
+        kinds: [PACK_PROMPT_KIND] 
+        // We removed "#pack" because it's not indexed by most relays
+      }
+    ],
+    {
+      onevent(event) {
+        // 2. Manual filtering for the unindexed "pack" relationship
+        const packTag = event.tags.find(t => t[0] === "pack");
+        const isTargetPrompt = event.kind === PACK_PROMPT_KIND && packTag && packTag[1] === packId;
+
+        if (event.kind === PACK_META_KIND) {
+          try {
+            const meta = JSON.parse(event.content);
+            packs[packId].meta = meta;
+            
+            // Update the UI so the host can see it
+            const select = document.getElementById("selectedPack");
+            select.innerHTML = `<option value="${packId}">${meta.name || 'Selected Pack'}</option>`;
+            select.value = packId;
+          } catch (e) { console.error("Meta parse error", e); }
+        } 
+        else if (isTargetPrompt) {
+          try {
+            const parsed = JSON.parse(event.content);
+            if (!packs[packId].promptIds.includes(event.id)) {
+              packs[packId].prompts.push(parsed.prompt);
+              packs[packId].promptIds.push(event.id);
+            }
+          } catch (e) { console.error("Prompt parse error", e); }
+        }
+      },
+      oneose() {
+        console.log(`Sync complete for ${packId}.`);
+        sub.close();
+      }
+    }
+  );
+}
+
+const packIdParam = params.get('pack');
+if (packIdParam && packIdParam !== 'giphy') {
+  loadSinglePack(packIdParam);
+}
 </script>
 
 </body>

@@ -1,0 +1,16 @@
+{
+  "name": "partysocial2",
+  "version": "1.0.0",
+  "description": "Party Social is a decentralized, real-time multiplayer party game powered by the Nostr protocol. Inspired by classic \"fill-in-the-blank\" party games, players can join rooms, answer prompts, and vote on the funniest or most creative submissions—all without a centralized server.",
+  "main": "index",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}

@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Create Pack - Party Social</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Browse and play community-made packs for Party Social." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@400;500&display=swap" />
+    <link rel="stylesheet" href="../style.css" />
+        <script src="../../consts.js"></script>
+
+</head>
+<body>
+
+<header>
+  <a href="/" class="logo">
+    Party Social
+  </a>
+  <div class="header-actions">
+    <a href="/packs" class="btn btn-outline">Find Packs</a>
+     <a href="/packs/create" class="btn btn-outline">Create Pack</a>
+     <a href="/packs/edit" class="btn btn-outline">Edit Pack</a>
+  </div>
+
+  <style>
+    input, button {
+      margin: 10px;
+      width: 90% !important;
+        padding: 10px 15px;
+        border-radius: var(--radius);
+        background: var(--card-bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+    }
+
+    #form {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+       margin: 30px auto;
+    }
+  </style>
+</header>
+
+<section class="hero">
+  <h1>Create a <em class="accent">pack</em>, share with the world.</h1>
+</section>
+
+
+<id id="form">
+      <input class="search-input" id="packName" placeholder="pack name" />
+    <input class="search-input" id="packDescription" placeholder="description" />
+<br>
+  <button class="btn btn-primary" onclick="createPack()">
+    Create Pack
+  </button>
+</id>
+
+<script type="module">
+
+  let pk = null;
+ 
+ async function tryGetPk() {
+  try {
+    if (window.nostr) pk = await window.nostr.getPublicKey();
+  } catch {
+        alert("Fail to get public key, make sure you have a Nostr extension installed and refresh the page");
+    return location.href = "/";
+  }
+}
+
+window.onload = tryGetPk;
+
+window.createPack = async () => {
+
+  const signer = await window?.nostr?.signEvent
+
+  if(!signer) {
+    alert("No signer found, make sure you have a Nostr extension installed");
+    return;
+  }
+
+  if (!signer) {
+    alert("sign in first");
+    return;
+  }
+
+  const name =
+    document.getElementById("packName")
+      .value
+      .trim();
+
+  const description =
+    document.getElementById("packDescription")
+      .value
+      .trim();
+
+  if (!name) {
+    alert("missing name");
+    return;
+  }
+
+  const packId =
+    "pack_" + crypto.randomUUID();
+
+  const unsignedEvent = {
+    kind: PACK_META_KIND,
+
+    created_at:
+      Math.floor(Date.now() / 1000),
+
+    tags: [
+      ["d", packId],
+      ["type", "party_social_pack"]
+    ],
+
+    content: JSON.stringify({
+      name,
+      description
+    }),
+
+    pubkey: pk
+  };
+
+  const signedEvent =
+    await signer.sign(unsignedEvent);
+
+  pool.publish(relays, signedEvent);
+
+  packs[packId] = { meta: { name, description }, prompts: [] };
+  seenPackEvents.add(signedEvent.id);
+  renderPacks();
+
+  document.getElementById("packName").value = "";
+  document.getElementById("packDescription").value = "";
+
+  alert("pack created");
+};
+
+</script>

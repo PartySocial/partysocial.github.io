@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Pack Marketplace - Party Social</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Browse and play community-made packs for Party Social." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@400;500&display=swap" />
+    <link rel="stylesheet" href="./style.css" />
+    <script src="../consts.js"></script>
+</head>
+<body>
+
+<header>
+  <a href="/" class="logo">
+    Party Social
+  </a>
+  <div class="header-actions">
+    <a href="/packs" class="btn btn-outline">Find Packs</a>
+     <a href="/packs/create" class="btn btn-outline">Create Pack</a>
+     <a href="/packs/edit" class="btn btn-outline">Edit Pack</a>
+  </div>
+</header>
+
+<!-- ─── Hero ────────────────────────────────────────────────────── -->
+<section class="hero">
+  <h1>Find your next <em>favorite pack</em></h1>
+  <p>Browse community-created prompt packs. Hit play to jump straight into a game with any pack. Found   <span class="result-count" id="resultCount">... packs</span></p>
+
+</section>
+
+<div class="toolbar">
+  <div class="search-wrap">
+    <span class="search-icon">⌕</span>
+    <input id="searchInput" class="search-input" type="search" placeholder="Search packs by name or description…" autocomplete="off" />
+  </div>
+  <select id="sortSelect" class="sort-select">
+    <option value="prompts-desc">Most prompts</option>
+    <option value="prompts-asc">Fewest prompts</option>
+    <option value="name-asc">Name A→Z</option>
+    <option value="name-desc">Name Z→A</option>
+    <option value="newest">Newest first</option>
+  </select>
+  
+</div>
+
+<!-- ─── States ───────────────────────────────────────────────────── -->
+<div class="state-panel visible" id="stateLoading">
+  <div class="spinner"></div>
+  <p class="state-title">Loading packs…</p>
+  <p class="state-sub">Connecting to Nostr relays and fetching community packs.</p>
+</div>
+
+<div class="state-panel" id="stateEmpty">
+  <div class="state-icon">📦</div>
+  <p class="state-title">No packs found</p>
+  <p class="state-sub">Try a different search term, or create your own pack from the main menu.</p>
+</div>
+
+<!-- ─── Grid ─────────────────────────────────────────────────────── -->
+<div class="grid" id="grid">
+
+
+</div>
+
+<!-- ─── Pagination ───────────────────────────────────────────────── -->
+<div class="pagination" id="pagination"></div>
+
+<!-- ─── Toast ────────────────────────────────────────────────────── -->
+<div id="toast"></div>
+
+<script type="module">
+import {
+  SimplePool
+} from "https://esm.sh/nostr-tools@2.7.0";
+
+// ─── State ───────────────────────────────────────────────────────
+const packs       = {};           // packId → { meta, prompts, promptIds, pubkey, createdAt }
+const seenEvents  = new Set();
+const deletedIds  = new Set();
+
+let   allPacks    = [];           // flat sorted/filtered array
+let   currentPage = 1;
+let   searchQuery = "";
+let   sortMode    = "prompts-desc";
+let   loadTimer   = null;
+let   pk          = null;         // local user pubkey (if NIP-7)
+
+const pool = new SimplePool();
+
+// ─── Detect signed-in user (optional, for "yours" badge) ─────────
+async function tryGetPk() {
+  try {
+    if (window.nostr) pk = await window.nostr.getPublicKey();
+  } catch {}
+}
+
+// ─── Nostr loading ───────────────────────────────────────────────
+function loadPacks() {
+  showState("loading");
+  for (const id in packs) delete packs[id];
+  seenEvents.clear();
+  deletedIds.clear();
+
+  pool.subscribeMany(RELAYS, [{ kinds: [PACK_META_KIND, PACK_PROMPT_KIND, 5] }], {
+    onevent(event) {
+      if (seenEvents.has(event.id)) return;
+      seenEvents.add(event.id);
+
+      // Deletion event
+      if (event.kind === 5) {
+        const aTag = event.tags.find(t => t[0] === "a");
+        if (aTag) {
+          const [,, dTag] = aTag[1].split(":");
+          if (dTag) deletedIds.add(dTag);
+        }
+        event.tags.filter(t => t[0] === "e").forEach(t => deletedIds.add(t[1]));
+        scheduleRender();
+        return;
+      }
+
+      const typeTag = event.tags.find(t => t[0] === "type");
+      if (!typeTag) return;
+
+      // Pack meta
+      if (event.kind === PACK_META_KIND && typeTag[1] === "party_social_pack") {
+        const dTag = event.tags.find(t => t[0] === "d");
+        if (!dTag) return;
+        const packId = dTag[1];
+
+        try {
+          const meta = JSON.parse(event.content);
+          if (meta.deleted) { deletedIds.add(packId); scheduleRender(); return; }
+
+          if (!packs[packId]) {
+            packs[packId] = { meta, prompts: [], promptIds: [], pubkey: event.pubkey, createdAt: event.created_at };
+          } else {
+            // prefer most-recent meta event
+            if (event.created_at >= (packs[packId].createdAt || 0)) {
+              packs[packId].meta      = meta;
+              packs[packId].pubkey    = event.pubkey;
+              packs[packId].createdAt = event.created_at;
+            }
+          }
+        } catch {}
+        scheduleRender();
+        return;
+      }
+
+      // Pack prompt
+      if (event.kind === PACK_PROMPT_KIND && typeTag[1] === "party_social_prompt") {
+        const packTag = event.tags.find(t => t[0] === "pack");
+        if (!packTag) return;
+        const packId = packTag[1];
+        try {
+          const parsed = JSON.parse(event.content);
+          if (!packs[packId]) packs[packId] = { meta: null, prompts: [], promptIds: [], pubkey: null, createdAt: 0 };
+          if (!packs[packId].promptIds.includes(event.id)) {
+            packs[packId].prompts.push(parsed.prompt);
+            packs[packId].promptIds.push(event.id);
+          }
+        } catch {}
+        scheduleRender();
+      }
+    }
+  });
+}
+
+// ─── Render scheduler ────────────────────────────────────────────
+function scheduleRender() {
+  clearTimeout(loadTimer);
+  loadTimer = setTimeout(render, 120);
+}
+
+// ─── Filter + sort pipeline ───────────────────────────────────────
+function buildPackList() {
+  return Object.entries(packs)
+    .filter(([id, p]) => {
+      if (deletedIds.has(id)) return false;
+      if (!p.meta?.name)      return false;
+      if (!p.prompts.length)  return false;
+      return true;
+    })
+    .filter(([, p]) => {
+      if (!searchQuery) return true;
+      const q = searchQuery.toLowerCase();
+      return (
+        p.meta.name.toLowerCase().includes(q) ||
+        (p.meta.description || "").toLowerCase().includes(q)
+      );
+    })
+    .map(([id, p]) => ({ id, ...p }))
+    .sort((a, b) => {
+      switch (sortMode) {
+        case "prompts-desc": return b.prompts.length - a.prompts.length;
+        case "prompts-asc":  return a.prompts.length - b.prompts.length;
+        case "name-asc":     return a.meta.name.localeCompare(b.meta.name);
+        case "name-desc":    return b.meta.name.localeCompare(a.meta.name);
+        case "newest":       return (b.createdAt || 0) - (a.createdAt || 0);
+        default:             return 0;
+      }
+    });
+}
+
+// ─── Main render ─────────────────────────────────────────────────
+function render() {
+  allPacks = buildPackList();
+  const total = allPacks.length;
+
+  // Clamp page
+  const maxPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (currentPage > maxPage) currentPage = maxPage;
+
+  document.getElementById("resultCount").textContent =
+    total ? `${total} pack${total !== 1 ? "s" : ""}` : "";
+
+  if (total === 0) {
+    showState(Object.keys(packs).length === 0 ? "loading" : "empty");
+    document.getElementById("grid").innerHTML = "";
+    document.getElementById("pagination").innerHTML = "";
+    return;
+  }
+
+  showState("none");
+
+  const start  = (currentPage - 1) * PAGE_SIZE;
+  const page   = allPacks.slice(start, start + PAGE_SIZE);
+
+  renderGrid(page);
+  renderPagination(total, maxPage);
+}
+
+// ─── Grid ─────────────────────────────────────────────────────────
+function renderGrid(page) {
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "";
+
+
+    const giphyCard = document.createElement("div");
+    giphyCard.className = "card giphy-card";
+    grid.appendChild(giphyCard);
+    giphyCard.innerHTML = `
+      <div class="card-name">GIPHY</div>
+      <div class="card-desc">Play with a random GIF from Giphy! Perfect for livening up your parties with visual prompts.</div>
+      <div class="card-actions">
+        <a href="/game?pack=giphy" class="btn btn-primary">▶ Play this pack</a>
+      </div>
+    `;
+
+    grid.appendChild(giphyCard);
+
+  page.forEach((pack, i) => {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.style.animationDelay = `${i * 40}ms`;
+
+    const isOwner  = pk && pack.pubkey === pk;
+    const isNew    = (Date.now()/1000 - (pack.createdAt || 0)) < 86400 * 3;
+    const isHot    = pack.prompts.length > 20;
+    const badge    = isOwner ? "yours" : isNew ? "new" : isHot ? "hot" : "";
+    const emoji    = pickEmoji(pack.meta.name);
+    const pkShort  = pack.pubkey ? pack.pubkey.slice(0, 8) + "…" : "anonymous";
+
+    const gameUrl  = `/game?pack=${encodeURIComponent(pack.id)}`;
+
+    card.innerHTML = `
+      <div class="card-header">
+              <div class="card-name">${esc(pack.meta.name)}</div>
+        ${badge ? `<span class="card-badge badge-${badge}">${badge}</span>` : ""}
+      </div>
+      <div class="card-desc">${esc(pack.meta.description || "No description provided.")}</div>
+      <div class="card-meta">
+        <div class="meta-pill"><span class="meta-dot"></span>${pack.prompts.length} prompt${pack.prompts.length !== 1 ? "s" : ""}</div>
+        <div class="meta-pill"><span class="meta-dot"></span>${pkShort}</div>
+      </div>
+      <div class="card-actions">
+        <a href="${gameUrl}" class="btn btn-primary">▶ Play this pack</a>
+      </div>
+    `;
+
+    grid.appendChild(card);    
+  });
+}
+
+// ─── Pagination ───────────────────────────────────────────────────
+function renderPagination(total, maxPage) {
+  const el = document.getElementById("pagination");
+  el.innerHTML = "";
+  if (maxPage <= 1) return;
+
+  const mkBtn = (label, page, disabled = false, active = false) => {
+    const b = document.createElement("button");
+    b.className = "page-btn" + (active ? " active" : "");
+    b.textContent = label;
+    b.disabled = disabled;
+    b.addEventListener("click", () => { currentPage = page; render(); window.scrollTo({ top: 0, behavior: "smooth" }); });
+    return b;
+  };
+
+  const mkEllipsis = () => {
+    const s = document.createElement("span");
+    s.className = "page-ellipsis";
+    s.textContent = "…";
+    return s;
+  };
+
+  el.appendChild(mkBtn("←", currentPage - 1, currentPage === 1));
+
+  // Build page number range (show up to 7 slots)
+  const pages = [];
+  if (maxPage <= 7) {
+    for (let i = 1; i <= maxPage; i++) pages.push(i);
+  } else {
+    pages.push(1);
+    if (currentPage > 3)       pages.push("...");
+    for (let i = Math.max(2, currentPage-1); i <= Math.min(maxPage-1, currentPage+1); i++) pages.push(i);
+    if (currentPage < maxPage - 2) pages.push("...");
+    pages.push(maxPage);
+  }
+
+  pages.forEach(p => {
+    if (p === "...") { el.appendChild(mkEllipsis()); }
+    else             { el.appendChild(mkBtn(p, p, false, p === currentPage)); }
+  });
+
+  el.appendChild(mkBtn("→", currentPage + 1, currentPage === maxPage));
+}
+
+// ─── States ───────────────────────────────────────────────────────
+function showState(state) {
+  document.getElementById("stateLoading").classList.toggle("visible", state === "loading");
+  document.getElementById("stateEmpty").classList.toggle("visible",   state === "empty");
+}
+
+// ─── Delete (if owner) ────────────────────────────────────────────
+window._deletePack = async (packId) => {
+  if (!window.nostr) { toast("NIP-7 extension needed to delete"); return; }
+  if (!confirm(`Delete "${packs[packId]?.meta?.name}"?`)) return;
+
+  try {
+    const localPk = await window.nostr.getPublicKey();
+    const promptIds = packs[packId]?.promptIds || [];
+
+    const tombstone = await window.nostr.signEvent({
+      kind: PACK_META_KIND,
+      created_at: Math.floor(Date.now()/1000),
+      tags: [["d", packId], ["type", "party_social_pack"], ["deleted", "true"]],
+      content: JSON.stringify({ name: "", description: "DELETED", deleted: true }),
+      pubkey: localPk
+    });
+
+    const deletion = await window.nostr.signEvent({
+      kind: 5,
+      created_at: Math.floor(Date.now()/1000),
+      tags: [["a", `${PACK_META_KIND}:${localPk}:${packId}`], ...promptIds.map(id => ["e", id])],
+      content: "Removing pack and prompts",
+      pubkey: localPk
+    });
+
+    await Promise.all([pool.publish(RELAYS, tombstone), pool.publish(RELAYS, deletion)]);
+    delete packs[packId];
+    render();
+    toast("Pack deleted ✓");
+  } catch (e) {
+    console.error(e);
+    toast("Delete failed");
+  }
+};
+
+// ─── Helpers ─────────────────────────────────────────────────────
+function esc(str = "") {
+  return str.replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[m]));
+}
+
+// Simple deterministic emoji per pack name
+function pickEmoji(name = "") {
+  const pool = ["🎉","🎲","🃏","🧠","🔥","🌈","🎭","🎤","💬","⚡","🏆","🎯","🥳","🎮","💫","🤣","🌀","🎪"];
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return pool[h % pool.length];
+}
+
+let toastTimer;
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2800);
+}
+
+// ─── Search (debounced) ───────────────────────────────────────────
+let searchTimer;
+document.getElementById("searchInput").addEventListener("input", e => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchQuery   = e.target.value.trim();
+    currentPage   = 1;
+    render();
+  }, 220);
+});
+
+// ─── Sort ─────────────────────────────────────────────────────────
+document.getElementById("sortSelect").addEventListener("change", e => {
+  sortMode    = e.target.value;
+  currentPage = 1;
+  render();
+});
+
+// ─── URL param: auto-redirect if ?pack= is in the game URL ────────
+// (This file handles browsing; the game page reads ?pack= and uses it)
+
+// ─── Boot ─────────────────────────────────────────────────────────
+await tryGetPk();
+loadPacks();
+</script>
+</body>
+</html>

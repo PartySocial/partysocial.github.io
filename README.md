@@ -2,7 +2,7 @@
 
 Party Social is a decentralized, real-time multiplayer party game powered by the Nostr protocol. Inspired by classic "fill-in-the-blank" party games, players can join rooms, answer prompts, and vote on the funniest or most creative submissions—all without a centralized server.
 
----
+
 
 ## 🚀 Features
 
@@ -21,7 +21,7 @@ Party Social is a decentralized, real-time multiplayer party game powered by the
 - **No Database Required**  
   All game data and community packs are fetched directly from the Nostr network.
 
----
+
 
 ## 🛠️ How to Play
 
@@ -46,7 +46,7 @@ Once answers are in, everyone votes for their favorite (you can't vote for yours
 #### Results Phase
 The winner is revealed based on the number of votes received.
 
----
+
 
 ## 🎨 Content Creation
 
@@ -56,7 +56,7 @@ You can contribute to the community by creating your own content:
 - **Add Prompts:** Add custom fill-in-the-blank questions to your packs.
 - **Browse:** Load and search for packs created by other users across the Nostr relay network.
 
----
+
 
 # Technical Details
 
@@ -72,7 +72,7 @@ You can contribute to the community by creating your own content:
 | 30311 | Pack Meta | NIP-33 parameterized replaceable event for pack details |
 | 30312 | Pack Prompt | Individual prompt events linked to a pack |
 
----
+
 
 ## Relays
 
@@ -81,21 +81,31 @@ By default, the app connects to:
 - `wss://nos.lol`
 - `wss://relay.primal.net`
 
----
+
 
 ## 🏗️ Development
 
-The project is a single-file web application built with:
+The project is a web application built with:
 
 - **Vanilla JS** — Logic and DOM manipulation
 - **Nostr-tools** — Cryptographic signing and relay communication
 - **CSS** — Simple, clean box-model styling
 
-### To Run Locally
+## Run Locally
+Use `./server` to run locally.
 
-Simply open `index.html` in any modern web browser. No build step required.
+### 1. Install dependencies
+```bash
+cd server
+npm i
+```
 
----
+### 2. Run
+```bash
+node server
+```
+
+
 
 ## ⚖️ License
 
